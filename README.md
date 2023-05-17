@@ -5,7 +5,7 @@
 Cargo.toml
 ```toml
 [dependencies]
-navmesh = "0.8"
+navmesh = "0.14"
 ```
 
 ## Example
@@ -27,7 +27,7 @@ let triangles = vec![
     (5, 4, 1).into(), // 3
 ];
 
-let mesh = NavMesh::new(vertices, triangles).unwrap();
+let mesh = NavMesh::<glam::Vec3>::new(vertices, triangles).unwrap();
 let path = mesh
     .find_path(
         (0.0, 1.0, 0.0).into(),

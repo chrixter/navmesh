@@ -1,4 +1,7 @@
-use crate::{Error, NavConnection, NavResult, NavVec3, Scalar, ZERO_TRESHOLD};
+use crate::{
+    primitives::{self, NavVec3, SpadePoint},
+    Error, NavConnection, NavResult, Scalar, ZERO_TRESHOLD,
+};
 use petgraph::{
     algo::{astar, tarjan_scc},
     graph::NodeIndex,
@@ -7,13 +10,15 @@ use petgraph::{
 };
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use spade::{rtree::RTree, BoundingRect, SpatialObject};
-use std::collections::HashMap;
+use spade::{rtree::RTree, BoundingRect, PointN, SpatialObject};
 #[cfg(not(feature = "scalar64"))]
 use std::f32::MAX as SCALAR_MAX;
 #[cfg(feature = "scalar64")]
 use std::f64::MAX as SCALAR_MAX;
+use std::{
+    collections::HashMap,
+    ops::{Div, Mul},
+};
 use typid::ID;
 
 #[cfg(feature = "parallel")]
@@ -42,11 +47,11 @@ macro_rules! into_iter {
 }
 
 /// Nav mash identifier.
-pub type NavMeshID = ID<NavMesh>;
+pub type NavMeshID<T> = ID<NavMesh<T>>;
 
 /// Nav mesh triangle description - lists used vertices indices.
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct NavTriangle {
     pub first: u32,
     pub second: u32,
@@ -75,8 +80,8 @@ impl From<[u32; 3]> for NavTriangle {
 
 /// Nav mesh area descriptor. Nav mesh area holds information about specific nav mesh triangle.
 #[repr(C)]
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct NavArea {
+#[derive(Debug, Default, Clone)]
+pub struct NavArea<T: NavVec3> {
     /// Triangle index.
     pub triangle: u32,
     /// Area size (triangle area value).
@@ -85,14 +90,14 @@ pub struct NavArea {
     /// the opposite.
     pub cost: Scalar,
     /// Triangle center point.
-    pub center: NavVec3,
+    pub center: T,
     /// Radius of sphere that contains this triangle.
     pub radius: Scalar,
     /// Squared version of `radius`.
     pub radius_sqr: Scalar,
 }
 
-impl NavArea {
+impl<T: NavVec3> NavArea<T> {
     /// Calculate triangle area value.
     ///
     /// # Arguments
@@ -100,7 +105,7 @@ impl NavArea {
     /// * `b` - second vertice point.
     /// * `c` - thirs vertice point.
     #[inline]
-    pub fn calculate_area(a: NavVec3, b: NavVec3, c: NavVec3) -> Scalar {
+    pub fn calculate_area(a: T, b: T, c: T) -> Scalar {
         let ab = b - a;
         let ac = c - a;
         ab.cross(ac).magnitude() * 0.5
@@ -113,29 +118,26 @@ impl NavArea {
     /// * `b` - second vertice point.
     /// * `c` - thirs vertice point.
     #[inline]
-    pub fn calculate_center(a: NavVec3, b: NavVec3, c: NavVec3) -> NavVec3 {
+    pub fn calculate_center(a: T, b: T, c: T) -> T {
         let v = a + b + c;
-        NavVec3::new(v.x / 3.0, v.y / 3.0, v.z / 3.0)
+        NavVec3::new(v.x() / 3.0, v.y() / 3.0, v.z() / 3.0)
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NavSpatialObject {
+#[derive(Debug, Clone)]
+pub struct NavSpatialObject<T: NavVec3> {
     pub index: usize,
-    pub a: NavVec3,
-    pub b: NavVec3,
-    pub c: NavVec3,
-    ab: NavVec3,
-    bc: NavVec3,
-    ca: NavVec3,
-    normal: NavVec3,
-    dab: NavVec3,
-    dbc: NavVec3,
-    dca: NavVec3,
+    pub a: T,
+    pub b: T,
+    pub c: T,
+    normal: T,
+    dab: T,
+    dbc: T,
+    dca: T,
 }
 
-impl NavSpatialObject {
-    pub fn new(index: usize, a: NavVec3, b: NavVec3, c: NavVec3) -> Self {
+impl<T: NavVec3> NavSpatialObject<T> {
+    pub fn new(index: usize, a: T, b: T, c: T) -> Self {
         let ab = b - a;
         let bc = c - b;
         let ca = a - c;
@@ -148,9 +150,6 @@ impl NavSpatialObject {
             a,
             b,
             c,
-            ab,
-            bc,
-            ca,
             normal,
             dab,
             dbc,
@@ -159,11 +158,11 @@ impl NavSpatialObject {
     }
 
     #[inline]
-    pub fn normal(&self) -> NavVec3 {
+    pub fn normal(&self) -> T {
         self.normal
     }
 
-    pub fn closest_point(&self, point: NavVec3) -> NavVec3 {
+    pub fn closest_point(&self, point: T) -> T {
         let pab = point.project(self.a, self.b);
         let pbc = point.project(self.b, self.c);
         let pca = point.project(self.c, self.a);
@@ -174,40 +173,44 @@ impl NavSpatialObject {
         } else if pbc > 1.0 && pca < 0.0 {
             return self.c;
         } else if (0.0..=1.0).contains(&pab) && !point.is_above_plane(self.a, self.dab) {
-            return NavVec3::unproject(self.a, self.b, pab);
+            return T::unproject(self.a, self.b, pab);
         } else if (0.0..=1.0).contains(&pbc) && !point.is_above_plane(self.b, self.dbc) {
-            return NavVec3::unproject(self.b, self.c, pbc);
+            return T::unproject(self.b, self.c, pbc);
         } else if (0.0..=1.0).contains(&pca) && !point.is_above_plane(self.c, self.dca) {
-            return NavVec3::unproject(self.c, self.a, pca);
+            return T::unproject(self.c, self.a, pca);
         }
         point.project_on_plane(self.a, self.normal)
     }
 }
 
-impl SpatialObject for NavSpatialObject {
-    type Point = NavVec3;
+impl<T> SpatialObject for NavSpatialObject<T>
+where
+    T: NavVec3,
+    SpadePoint<T>: PointN<Scalar = Scalar>,
+{
+    type Point = SpadePoint<T>;
 
     fn mbr(&self) -> BoundingRect<Self::Point> {
-        let min = NavVec3::new(
-            self.a.x.min(self.b.x).min(self.c.x),
-            self.a.y.min(self.b.y).min(self.c.y),
-            self.a.z.min(self.b.z).min(self.c.z),
+        let min = T::new(
+            self.a.x().min(*self.b.x()).min(*self.c.x()),
+            self.a.y().min(*self.b.y()).min(*self.c.y()),
+            self.a.z().min(*self.b.z()).min(*self.c.z()),
         );
-        let max = NavVec3::new(
-            self.a.x.max(self.b.x).max(self.c.x),
-            self.a.y.max(self.b.y).max(self.c.y),
-            self.a.z.max(self.b.z).max(self.c.z),
+        let max = T::new(
+            self.a.x().max(*self.b.x()).max(*self.c.x()),
+            self.a.y().max(*self.b.y()).max(*self.c.y()),
+            self.a.z().max(*self.b.z()).max(*self.c.z()),
         );
-        BoundingRect::from_corners(&min, &max)
+        BoundingRect::from_corners(&SpadePoint(min), &SpadePoint(max))
     }
 
     fn distance2(&self, point: &Self::Point) -> Scalar {
-        (*point - self.closest_point(*point)).sqr_magnitude()
+        (point.0 - self.closest_point(point.0)).sqr_magnitude()
     }
 }
 
 /// Quality of querying a point on nav mesh.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum NavQuery {
     /// Best quality, totally accurate.
     Accuracy,
@@ -218,7 +221,7 @@ pub enum NavQuery {
 }
 
 /// Quality of finding path.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum NavPathMode {
     /// Best quality, finds shortest path.
     Accuracy,
@@ -227,25 +230,32 @@ pub enum NavPathMode {
 }
 
 /// Nav mesh object used to find shortest path between two points.
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct NavMesh {
-    id: NavMeshID,
-    vertices: Vec<NavVec3>,
+#[derive(Debug, Default, Clone)]
+pub struct NavMesh<T>
+where
+    T: NavVec3,
+    NavSpatialObject<T>: SpatialObject<Point = SpadePoint<T>>,
+{
+    id: NavMeshID<T>,
+    vertices: Vec<T>,
     triangles: Vec<NavTriangle>,
-    areas: Vec<NavArea>,
+    areas: Vec<NavArea<T>>,
     // {triangle connection: (distance sqr, vertex connection)}
     connections: HashMap<NavConnection, (Scalar, NavConnection)>,
     graph: Graph<(), Scalar, Undirected>,
     nodes: Vec<NodeIndex>,
     nodes_map: HashMap<NodeIndex, usize>,
-    rtree: RTree<NavSpatialObject>,
-    spatials: Vec<NavSpatialObject>,
-    // {triangle index: [(from, to)]}
-    hard_edges: HashMap<usize, Vec<(NavVec3, NavVec3)>>,
-    origin: NavVec3,
+    rtree: RTree<NavSpatialObject<T>>,
+    spatials: Vec<NavSpatialObject<T>>,
+    origin: T,
 }
 
-impl NavMesh {
+impl<T> NavMesh<T>
+where
+    T: NavVec3 + PartialEq + Mul<Scalar, Output = T> + Div<Scalar, Output = T>,
+    NavSpatialObject<T>: SpatialObject<Point = SpadePoint<T>>,
+    SpadePoint<T>: PointN<Scalar = Scalar>,
+{
     /// Create new nav mesh object from vertices and triangles.
     ///
     /// # Arguments
@@ -261,12 +271,12 @@ impl NavMesh {
     /// use navmesh::*;
     ///
     /// let vertices = vec![
-    ///     (0.0, 0.0, 0.0).into(), // 0
-    ///     (1.0, 0.0, 0.0).into(), // 1
-    ///     (2.0, 0.0, 1.0).into(), // 2
-    ///     (0.0, 1.0, 0.0).into(), // 3
-    ///     (1.0, 1.0, 0.0).into(), // 4
-    ///     (2.0, 1.0, 1.0).into(), // 5
+    ///     [0.0, 0.0, 0.0].into(), // 0
+    ///     [1.0, 0.0, 0.0].into(), // 1
+    ///     [2.0, 0.0, 1.0].into(), // 2
+    ///     [0.0, 1.0, 0.0].into(), // 3
+    ///     [1.0, 1.0, 0.0].into(), // 4
+    ///     [2.0, 1.0, 1.0].into(), // 5
     /// ];
     /// let triangles = vec![
     ///     (0, 1, 4).into(), // 0
@@ -275,14 +285,11 @@ impl NavMesh {
     ///     (5, 4, 1).into(), // 3
     /// ];
     ///
-    /// let mesh = NavMesh::new(vertices, triangles).unwrap();
+    /// let mesh = NavMesh::<NVec3>::new(vertices, triangles).unwrap();
     /// ```
-    pub fn new(vertices: Vec<NavVec3>, triangles: Vec<NavTriangle>) -> NavResult<Self> {
-        let origin = vertices
-            .iter()
-            .cloned()
-            .fold(NavVec3::default(), |a, v| a + v)
-            / vertices.len() as Scalar;
+    pub fn new(vertices: Vec<T>, triangles: Vec<NavTriangle>) -> NavResult<Self> {
+        let origin =
+            vertices.iter().cloned().fold(T::zero(), |a, v| a + v) / vertices.len() as Scalar;
 
         let areas = iter!(triangles)
             .enumerate()
@@ -399,39 +406,6 @@ impl NavMesh {
             rtree.insert(spatial.clone());
         }
 
-        let hard_edges = iter!(triangles)
-            .enumerate()
-            .filter_map(|(index, triangle)| {
-                let edge_a = NavConnection(triangle.first, triangle.second);
-                let edge_b = NavConnection(triangle.second, triangle.third);
-                let edge_c = NavConnection(triangle.third, triangle.first);
-                let mut planes = vec![];
-                if edges[&edge_a].len() < 2 {
-                    planes.push((
-                        vertices[triangle.first as usize],
-                        vertices[triangle.second as usize],
-                    ));
-                }
-                if edges[&edge_b].len() < 2 {
-                    planes.push((
-                        vertices[triangle.second as usize],
-                        vertices[triangle.third as usize],
-                    ));
-                }
-                if edges[&edge_c].len() < 2 {
-                    planes.push((
-                        vertices[triangle.third as usize],
-                        vertices[triangle.first as usize],
-                    ));
-                }
-                if planes.is_empty() {
-                    None
-                } else {
-                    Some((index, planes))
-                }
-            })
-            .collect::<HashMap<_, _>>();
-
         Ok(Self {
             id: ID::new(),
             vertices,
@@ -443,7 +417,6 @@ impl NavMesh {
             nodes_map,
             rtree,
             spatials,
-            hard_edges,
             origin,
         })
     }
@@ -463,7 +436,7 @@ impl NavMesh {
                             None
                         }
                     })
-                    .fold((NavVec3::default(), 0), |a, v| (a.0 + v, a.1 + 1));
+                    .fold((T::zero(), 0), |a, v| (a.0 + v, a.1 + 1));
                 if c > 1 {
                     n = n / c as Scalar;
                 }
@@ -473,29 +446,29 @@ impl NavMesh {
         Self::new(shifted, self.triangles.clone())
     }
 
-    pub fn scale(&self, value: NavVec3, origin: Option<NavVec3>) -> NavResult<Self> {
+    pub fn scale(&self, value: T, origin: Option<T>) -> NavResult<Self> {
         let origin = origin.unwrap_or(self.origin);
         let vertices = iter!(self.vertices)
-            .map(|v| (*v - origin) * value + origin)
+            .map(|v| (*v - origin).mul_elem(value) + origin)
             .collect::<Vec<_>>();
         Self::new(vertices, self.triangles.clone())
     }
 
     /// Nav mesh identifier.
     #[inline]
-    pub fn id(&self) -> NavMeshID {
+    pub fn id(&self) -> NavMeshID<T> {
         self.id
     }
 
     /// Nav mesh origin point.
     #[inline]
-    pub fn origin(&self) -> NavVec3 {
+    pub fn origin(&self) -> T {
         self.origin
     }
 
     /// Reference to list of nav mesh vertices points.
     #[inline]
-    pub fn vertices(&self) -> &[NavVec3] {
+    pub fn vertices(&self) -> &[T] {
         &self.vertices
     }
 
@@ -507,7 +480,7 @@ impl NavMesh {
 
     /// Reference to list of nav mesh area descriptors.
     #[inline]
-    pub fn areas(&self) -> &[NavArea] {
+    pub fn areas(&self) -> &[NavArea<T>] {
         &self.areas
     }
 
@@ -536,7 +509,7 @@ impl NavMesh {
     ///
     /// # Returns
     /// `Some` with point on nav mesh if found or `None` otherwise.
-    pub fn closest_point(&self, point: NavVec3, query: NavQuery) -> Option<NavVec3> {
+    pub fn closest_point(&self, point: T, query: NavQuery) -> Option<T> {
         self.find_closest_triangle(point, query)
             .map(|triangle| self.spatials[triangle].closest_point(point))
     }
@@ -557,12 +530,12 @@ impl NavMesh {
     /// use navmesh::*;
     ///
     /// let vertices = vec![
-    ///     (0.0, 0.0, 0.0).into(), // 0
-    ///     (1.0, 0.0, 0.0).into(), // 1
-    ///     (2.0, 0.0, 1.0).into(), // 2
-    ///     (0.0, 1.0, 0.0).into(), // 3
-    ///     (1.0, 1.0, 0.0).into(), // 4
-    ///     (2.0, 1.0, 1.0).into(), // 5
+    ///     [0.0, 0.0, 0.0].into(), // 0
+    ///     [1.0, 0.0, 0.0].into(), // 1
+    ///     [2.0, 0.0, 1.0].into(), // 2
+    ///     [0.0, 1.0, 0.0].into(), // 3
+    ///     [1.0, 1.0, 0.0].into(), // 4
+    ///     [2.0, 1.0, 1.0].into(), // 5
     /// ];
     /// let triangles = vec![
     ///     (0, 1, 4).into(), // 0
@@ -571,11 +544,12 @@ impl NavMesh {
     ///     (5, 4, 1).into(), // 3
     /// ];
     ///
-    /// let mesh = NavMesh::new(vertices, triangles).unwrap();
+    /// let mesh = NavMesh::<NVec3>::new(vertices, triangles).unwrap();
+    ///
     /// let path = mesh
     ///     .find_path(
-    ///         (0.0, 1.0, 0.0).into(),
-    ///         (1.5, 0.25, 0.5).into(),
+    ///         [0.0, 1.0, 0.0].into(),
+    ///         [1.5, 0.25, 0.5].into(),
     ///         NavQuery::Accuracy,
     ///         NavPathMode::MidPoints,
     ///     )
@@ -591,13 +565,7 @@ impl NavMesh {
     ///     vec![(0, 10, 0), (10, 5, 0), (15, 2, 5),]
     /// );
     /// ```
-    pub fn find_path(
-        &self,
-        from: NavVec3,
-        to: NavVec3,
-        query: NavQuery,
-        mode: NavPathMode,
-    ) -> Option<Vec<NavVec3>> {
+    pub fn find_path(&self, from: T, to: T, query: NavQuery, mode: NavPathMode) -> Option<Vec<T>> {
         self.find_path_custom(from, to, query, mode, |_, _, _| true)
     }
 
@@ -619,12 +587,12 @@ impl NavMesh {
     /// use navmesh::*;
     ///
     /// let vertices = vec![
-    ///     (0.0, 0.0, 0.0).into(), // 0
-    ///     (1.0, 0.0, 0.0).into(), // 1
-    ///     (2.0, 0.0, 1.0).into(), // 2
-    ///     (0.0, 1.0, 0.0).into(), // 3
-    ///     (1.0, 1.0, 0.0).into(), // 4
-    ///     (2.0, 1.0, 1.0).into(), // 5
+    ///     [0.0, 0.0, 0.0].into(), // 0
+    ///     [1.0, 0.0, 0.0].into(), // 1
+    ///     [2.0, 0.0, 1.0].into(), // 2
+    ///     [0.0, 1.0, 0.0].into(), // 3
+    ///     [1.0, 1.0, 0.0].into(), // 4
+    ///     [2.0, 1.0, 1.0].into(), // 5
     /// ];
     /// let triangles = vec![
     ///     (0, 1, 4).into(), // 0
@@ -633,11 +601,12 @@ impl NavMesh {
     ///     (5, 4, 1).into(), // 3
     /// ];
     ///
-    /// let mesh = NavMesh::new(vertices, triangles).unwrap();
+    /// let mesh = NavMesh::<NVec3>::new(vertices, triangles).unwrap();
+    ///
     /// let path = mesh
     ///     .find_path_custom(
-    ///         (0.0, 1.0, 0.0).into(),
-    ///         (1.5, 0.25, 0.5).into(),
+    ///         [0.0, 1.0, 0.0].into(),
+    ///         [1.5, 0.25, 0.5].into(),
     ///         NavQuery::Accuracy,
     ///         NavPathMode::MidPoints,
     ///         |_dist_sqr, _first_idx, _second_idx| true,
@@ -656,16 +625,16 @@ impl NavMesh {
     /// ```
     pub fn find_path_custom<F>(
         &self,
-        from: NavVec3,
-        to: NavVec3,
+        from: T,
+        to: T,
         query: NavQuery,
         mode: NavPathMode,
         filter: F,
-    ) -> Option<Vec<NavVec3>>
+    ) -> Option<Vec<T>>
     where
         F: FnMut(Scalar, usize, usize) -> bool,
     {
-        if from.same_as(to) {
+        if from.coincides(to) {
             return None;
         }
         let start = self.find_closest_triangle(from, query)?;
@@ -684,12 +653,12 @@ impl NavMesh {
         }
     }
 
-    fn find_path_accuracy(&self, from: NavVec3, to: NavVec3, triangles: &[usize]) -> Vec<NavVec3> {
+    fn find_path_accuracy(&self, from: T, to: T, triangles: &[usize]) -> Vec<T> {
         #[derive(Debug)]
-        enum Node {
-            Point(NavVec3),
+        enum Node<U> {
+            Point(U),
             // (a, b, normal)
-            LevelChange(NavVec3, NavVec3, NavVec3),
+            LevelChange(U, U, U),
         }
 
         // TODO: reduce allocations.
@@ -700,14 +669,14 @@ impl NavMesh {
             let b = self.vertices[b as usize];
             let n = self.spatials[triangles[0]].normal();
             let m = self.spatials[triangles[1]].normal();
-            if !NavVec3::is_line_between_points(from, to, a, b, n) {
+            if !Self::is_line_between_points(from, to, a, b, n) {
                 let da = (from - a).sqr_magnitude();
                 let db = (from - b).sqr_magnitude();
                 let point = if da < db { a } else { b };
                 return vec![from, point, to];
             } else if n.dot(m) < 1.0 - ZERO_TRESHOLD {
                 let n = (b - a).normalize().cross(n);
-                if let Some(point) = NavVec3::raycast_line(from, to, a, b, n) {
+                if let Some(point) = Self::raycast_line(from, to, a, b, n) {
                     return vec![from, point, to];
                 }
             }
@@ -728,8 +697,8 @@ impl NavMesh {
             let normal = self.spatials[triplets[1]].normal();
             let old_last_normal = last_normal;
             last_normal = normal;
-            if !NavVec3::is_line_between_points(start, c, a, b, normal)
-                || !NavVec3::is_line_between_points(start, d, a, b, normal)
+            if !Self::is_line_between_points(start, c, a, b, normal)
+                || !Self::is_line_between_points(start, d, a, b, normal)
             {
                 let da = (start - a).sqr_magnitude();
                 let db = (start - b).sqr_magnitude();
@@ -751,7 +720,7 @@ impl NavMesh {
             let b = self.vertices[b as usize];
             let n = self.spatials[triangles[triangles.len() - 2]].normal();
             let m = self.spatials[triangles[triangles.len() - 1]].normal();
-            if !NavVec3::is_line_between_points(start, to, a, b, n) {
+            if !Self::is_line_between_points(start, to, a, b, n) {
                 let da = (start - a).sqr_magnitude();
                 let db = (start - b).sqr_magnitude();
                 let point = if da < db { a } else { b };
@@ -780,7 +749,7 @@ impl NavMesh {
                             _ => None,
                         })
                         .unwrap_or(to);
-                    if let Some(p) = NavVec3::raycast_line(point, next, a, b, n) {
+                    if let Some(p) = Self::raycast_line(point, next, a, b, n) {
                         points.push(p);
                     }
                 }
@@ -791,7 +760,7 @@ impl NavMesh {
         points
     }
 
-    fn find_path_midpoints(&self, from: NavVec3, to: NavVec3, triangles: &[usize]) -> Vec<NavVec3> {
+    fn find_path_midpoints(&self, from: T, to: T, triangles: &[usize]) -> Vec<T> {
         if triangles.len() == 2 {
             let NavConnection(a, b) =
                 self.connections[&NavConnection(triangles[0] as u32, triangles[1] as u32)].1;
@@ -799,8 +768,7 @@ impl NavMesh {
             let b = self.vertices[b as usize];
             let n = self.spatials[triangles[0]].normal();
             let m = self.spatials[triangles[1]].normal();
-            if n.dot(m) < 1.0 - ZERO_TRESHOLD || !NavVec3::is_line_between_points(from, to, a, b, n)
-            {
+            if n.dot(m) < 1.0 - ZERO_TRESHOLD || !Self::is_line_between_points(from, to, a, b, n) {
                 return vec![from, (a + b) * 0.5, to];
             } else {
                 return vec![from, to];
@@ -828,7 +796,7 @@ impl NavMesh {
                 let c = self.vertices[c as usize];
                 let d = self.vertices[d as usize];
                 let end = (c + d) * 0.5;
-                if !NavVec3::is_line_between_points(start, end, a, b, normal) {
+                if !Self::is_line_between_points(start, end, a, b, normal) {
                     start = point;
                     points.push(start);
                 }
@@ -844,9 +812,7 @@ impl NavMesh {
             let b = self.vertices[b as usize];
             let n = self.spatials[triangles[triangles.len() - 2]].normal();
             let m = self.spatials[triangles[triangles.len() - 1]].normal();
-            if n.dot(m) < 1.0 - ZERO_TRESHOLD
-                || !NavVec3::is_line_between_points(start, to, a, b, n)
-            {
+            if n.dot(m) < 1.0 - ZERO_TRESHOLD || !Self::is_line_between_points(start, to, a, b, n) {
                 points.push((a + b) * 0.5);
             }
         }
@@ -871,12 +837,12 @@ impl NavMesh {
     /// use navmesh::*;
     ///
     /// let vertices = vec![
-    ///     (0.0, 0.0, 0.0).into(), // 0
-    ///     (1.0, 0.0, 0.0).into(), // 1
-    ///     (2.0, 0.0, 1.0).into(), // 2
-    ///     (0.0, 1.0, 0.0).into(), // 3
-    ///     (1.0, 1.0, 0.0).into(), // 4
-    ///     (2.0, 1.0, 1.0).into(), // 5
+    ///     [0.0, 0.0, 0.0].into(), // 0
+    ///     [1.0, 0.0, 0.0].into(), // 1
+    ///     [2.0, 0.0, 1.0].into(), // 2
+    ///     [0.0, 1.0, 0.0].into(), // 3
+    ///     [1.0, 1.0, 0.0].into(), // 4
+    ///     [2.0, 1.0, 1.0].into(), // 5
     /// ];
     /// let triangles = vec![
     ///     (0, 1, 4).into(), // 0
@@ -885,7 +851,8 @@ impl NavMesh {
     ///     (5, 4, 1).into(), // 3
     /// ];
     ///
-    /// let mesh = NavMesh::new(vertices, triangles).unwrap();
+    /// let mesh = NavMesh::<NVec3>::new(vertices, triangles).unwrap();
+    ///
     /// let path = mesh.find_path_triangles(1, 2).unwrap().0;
     /// assert_eq!(path, vec![1, 0, 3, 2]);
     /// ```
@@ -912,12 +879,12 @@ impl NavMesh {
     /// use navmesh::*;
     ///
     /// let vertices = vec![
-    ///     (0.0, 0.0, 0.0).into(), // 0
-    ///     (1.0, 0.0, 0.0).into(), // 1
-    ///     (2.0, 0.0, 1.0).into(), // 2
-    ///     (0.0, 1.0, 0.0).into(), // 3
-    ///     (1.0, 1.0, 0.0).into(), // 4
-    ///     (2.0, 1.0, 1.0).into(), // 5
+    ///     [0.0, 0.0, 0.0].into(), // 0
+    ///     [1.0, 0.0, 0.0].into(), // 1
+    ///     [2.0, 0.0, 1.0].into(), // 2
+    ///     [0.0, 1.0, 0.0].into(), // 3
+    ///     [1.0, 1.0, 0.0].into(), // 4
+    ///     [2.0, 1.0, 1.0].into(), // 5
     /// ];
     /// let triangles = vec![
     ///     (0, 1, 4).into(), // 0
@@ -926,7 +893,8 @@ impl NavMesh {
     ///     (5, 4, 1).into(), // 3
     /// ];
     ///
-    /// let mesh = NavMesh::new(vertices, triangles).unwrap();
+    /// let mesh = NavMesh::<NVec3>::new(vertices, triangles).unwrap();
+    ///
     /// let path = mesh.find_path_triangles_custom(
     ///     1,
     ///     2,
@@ -986,16 +954,22 @@ impl NavMesh {
     ///
     /// # Returns
     /// `Some` with nav mesh triangle index if found or `None` otherwise.
-    pub fn find_closest_triangle(&self, point: NavVec3, query: NavQuery) -> Option<usize> {
+    pub fn find_closest_triangle(&self, point: T, query: NavQuery) -> Option<usize> {
         match query {
-            NavQuery::Accuracy => self.rtree.nearest_neighbor(&point).map(|t| t.index),
-            NavQuery::ClosestFirst => self.rtree.close_neighbor(&point).map(|t| t.index),
+            NavQuery::Accuracy => self
+                .rtree
+                .nearest_neighbor(&SpadePoint(point))
+                .map(|t| t.index),
+            NavQuery::ClosestFirst => self
+                .rtree
+                .close_neighbor(&SpadePoint(point))
+                .map(|t| t.index),
             NavQuery::Closest => self
                 .rtree
-                .nearest_neighbors(&point)
+                .nearest_neighbors(&SpadePoint(point))
                 .into_iter()
-                .map(|o| (o.distance2(&point), o))
-                .fold(None, |a: Option<(Scalar, &NavSpatialObject)>, i| {
+                .map(|o| (o.distance2(&SpadePoint(point)), o))
+                .fold(None, |a: Option<(Scalar, &NavSpatialObject<T>)>, i| {
                     if let Some(a) = a {
                         if i.0 < a.0 {
                             Some(i)
@@ -1019,11 +993,7 @@ impl NavMesh {
     ///
     /// # Returns
     /// `Some` with point and distance from path start point if found or `None` otherwise.
-    pub fn path_target_point(
-        path: &[NavVec3],
-        point: NavVec3,
-        offset: Scalar,
-    ) -> Option<(NavVec3, Scalar)> {
+    pub fn path_target_point(path: &[T], point: T, offset: Scalar) -> Option<(T, Scalar)> {
         let s = Self::project_on_path(path, point, offset);
         Some((Self::point_on_path(path, s)?, s))
     }
@@ -1037,7 +1007,7 @@ impl NavMesh {
     ///
     /// # Returns
     /// Distance from path start point.
-    pub fn project_on_path(path: &[NavVec3], point: NavVec3, offset: Scalar) -> Scalar {
+    pub fn project_on_path(path: &[T], point: T, offset: Scalar) -> Scalar {
         let p = match path.len() {
             0 | 1 => 0.0,
             2 => Self::project_on_line(path[0], path[1], point),
@@ -1068,19 +1038,15 @@ impl NavMesh {
     ///
     /// # Returns
     /// `Some` with point on path ot `None` otherwise.
-    pub fn point_on_path(path: &[NavVec3], mut s: Scalar) -> Option<NavVec3> {
+    pub fn point_on_path(path: &[T], mut s: Scalar) -> Option<T> {
         match path.len() {
             0 | 1 => None,
-            2 => Some(NavVec3::unproject(
-                path[0],
-                path[1],
-                s / Self::path_length(path),
-            )),
+            2 => Some(T::unproject(path[0], path[1], s / Self::path_length(path))),
             _ => {
                 for pair in path.windows(2) {
                     let d = (pair[1] - pair[0]).magnitude();
                     if s <= d {
-                        return Some(NavVec3::unproject(pair[0], pair[1], s / d));
+                        return Some(T::unproject(pair[0], pair[1], s / d));
                     }
                     s -= d;
                 }
@@ -1096,7 +1062,7 @@ impl NavMesh {
     ///
     /// # Returns
     /// Path length.
-    pub fn path_length(path: &[NavVec3]) -> Scalar {
+    pub fn path_length(path: &[T]) -> Scalar {
         match path.len() {
             0 | 1 => 0.0,
             2 => (path[1] - path[0]).magnitude(),
@@ -1106,13 +1072,13 @@ impl NavMesh {
         }
     }
 
-    fn project_on_line(from: NavVec3, to: NavVec3, point: NavVec3) -> Scalar {
+    fn project_on_line(from: T, to: T, point: T) -> Scalar {
         let d = (to - from).magnitude();
         let p = point.project(from, to);
         d * p
     }
 
-    fn point_on_line(from: NavVec3, to: NavVec3, point: NavVec3) -> (NavVec3, Scalar) {
+    fn point_on_line(from: T, to: T, point: T) -> (T, Scalar) {
         let d = (to - from).magnitude();
         let p = point.project(from, to);
         if p <= 0.0 {
@@ -1120,7 +1086,157 @@ impl NavMesh {
         } else if p >= 1.0 {
             (to, d)
         } else {
-            (NavVec3::unproject(from, to, p), p * d)
+            (T::unproject(from, to, p), p * d)
         }
+    }
+
+    fn raycast_line(from: T, to: T, a: T, b: T, normal: T) -> Option<T> {
+        let p = Self::raycast_plane(from, to, a, normal)?;
+        let t = p.project(a, b).max(0.0).min(1.0);
+        Some(T::unproject(a, b, t))
+    }
+
+    fn raycast_plane(from: T, to: T, origin: T, normal: T) -> Option<T> {
+        let dir = (to - from).normalize();
+        let denom = normal.dot(dir);
+        if denom.abs() > ZERO_TRESHOLD {
+            let t = (origin - from).dot(normal) / denom;
+            if t >= 0.0 && t <= (to - from).magnitude() {
+                return Some(from + dir * t);
+            }
+        }
+        None
+    }
+
+    fn is_line_between_points(from: T, to: T, a: T, b: T, normal: T) -> bool {
+        let n = (to - from).cross(normal);
+        let sa = Self::side(n.dot(a - from));
+        let sb = Self::side(n.dot(b - from));
+        sa != sb
+    }
+
+    fn side(v: Scalar) -> i8 {
+        if v.abs() < ZERO_TRESHOLD {
+            0
+        } else {
+            v.signum() as i8
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(any(feature = "glam", feature = "cgmath", feature = "nalgebra")))]
+    type Vec3Type = crate::primitives::NVec3;
+
+    #[cfg(feature = "glam")]
+    type Vec3Type = glam::Vec3;
+
+    #[cfg(feature = "cgmath")]
+    type Vec3Type = cgmath::Vector3<Scalar>;
+
+    #[cfg(feature = "nalgebra")]
+    type Vec3Type = nalgebra::Vector3<Scalar>;
+
+    #[test]
+    fn test_raycast() {
+        assert_eq!(
+            NavMesh::<Vec3Type>::raycast_plane(
+                [-1.0, -1.0, -1.0].into(),
+                [1.0, 1.0, 1.0].into(),
+                [0.0, 0.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+            )
+            .unwrap(),
+            Vec3Type::new(0.0, 0.0, 0.0),
+        );
+        assert_eq!(
+            NavMesh::<Vec3Type>::raycast_plane(
+                [0.0, 0.0, 0.0].into(),
+                [2.0, 1.0, 1.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+            )
+            .unwrap(),
+            Vec3Type::new(1.0, 0.5, 0.5),
+        );
+        assert_eq!(
+            NavMesh::<Vec3Type>::raycast_line(
+                [-1.0, -1.0, 1.0].into(),
+                [1.0, 1.0, 1.0].into(),
+                [1.0, -1.0, 0.0].into(),
+                [-1.0, 1.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+            )
+            .unwrap(),
+            Vec3Type::new(0.0, 0.0, 0.0),
+        );
+        assert_eq!(
+            NavMesh::<Vec3Type>::raycast_line(
+                [0.0, 0.0, 0.0].into(),
+                [2.0, 1.0, 1.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [1.0, 1.0, 0.0].into(),
+                [1.0, 0.0, 0.0].into(),
+            )
+            .unwrap(),
+            Vec3Type::new(1.0, 0.5, 0.0),
+        );
+    }
+
+    #[test]
+    fn test_line_between_points() {
+        assert_eq!(
+            true,
+            NavMesh::<Vec3Type>::is_line_between_points(
+                [0.0, -1.0, 0.0].into(),
+                [0.0, 1.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into(),
+            ),
+        );
+        assert_eq!(
+            false,
+            NavMesh::<Vec3Type>::is_line_between_points(
+                [-2.0, -1.0, 0.0].into(),
+                [-2.0, 1.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into(),
+            ),
+        );
+        assert_eq!(
+            false,
+            NavMesh::<Vec3Type>::is_line_between_points(
+                [2.0, -1.0, 0.0].into(),
+                [2.0, 1.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into(),
+            ),
+        );
+        assert_eq!(
+            true,
+            NavMesh::<Vec3Type>::is_line_between_points(
+                [-1.0, -1.0, 0.0].into(),
+                [-1.0, 1.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into(),
+            ),
+        );
+        assert_eq!(
+            true,
+            NavMesh::<Vec3Type>::is_line_between_points(
+                [1.0, -1.0, 0.0].into(),
+                [1.0, 1.0, 0.0].into(),
+                [-1.0, 0.0, 0.0].into(),
+                [1.0, 0.0, 0.0].into(),
+                [0.0, 0.0, 1.0].into(),
+            ),
+        );
     }
 }

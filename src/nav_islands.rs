@@ -5,7 +5,6 @@ use petgraph::{
     visit::EdgeRef,
     Directed, Graph,
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
 #[cfg(not(feature = "scalar64"))]
 use std::f32::MAX as SCALAR_MAX;
 #[cfg(feature = "scalar64")]
@@ -32,36 +31,28 @@ macro_rules! iter {
 /// Nav islands identifier.
 pub type NavIslandsID = ID<NavIslands<(), ()>>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NavIslandPortal<Island, Portal>
 where
     Island: std::fmt::Debug + Clone + Eq + Hash + Send + Sync,
     Portal: std::fmt::Debug + Clone + Eq + Hash + Send + Sync,
 {
-    #[serde(bound(deserialize = "Island: Serialize + DeserializeOwned"))]
     pub island: Island,
-    #[serde(bound(deserialize = "Portal: Serialize + DeserializeOwned"))]
     pub portal: Option<Portal>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct NavIslandsConnection<Island, Portal>
 where
     Island: std::fmt::Debug + Clone + Eq + Hash + Send + Sync,
     Portal: std::fmt::Debug + Clone + Eq + Hash + Send + Sync,
 {
-    #[serde(bound(
-        deserialize = "Island: Serialize + DeserializeOwned, Portal: Serialize + DeserializeOwned"
-    ))]
     pub from: NavIslandPortal<Island, Portal>,
-    #[serde(bound(
-        deserialize = "Island: Serialize + DeserializeOwned, Portal: Serialize + DeserializeOwned"
-    ))]
     pub to: NavIslandPortal<Island, Portal>,
     pub distance: Scalar,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct NavIslands<Island, Portal>
 where
     Island: std::fmt::Debug + Clone + Eq + Hash + Send + Sync,
@@ -69,9 +60,6 @@ where
 {
     id: NavIslandsID,
     costs: Vec<Scalar>,
-    #[serde(bound(
-        deserialize = "Island: Serialize + DeserializeOwned, Portal: Serialize + DeserializeOwned"
-    ))]
     portals: Vec<NavIslandPortal<Island, Portal>>,
     graph: Graph<(), Scalar, Directed>,
     nodes: Vec<NodeIndex>,

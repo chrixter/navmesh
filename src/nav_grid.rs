@@ -5,7 +5,6 @@ use petgraph::{
     visit::EdgeRef,
     Directed, Graph, Undirected,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(not(feature = "scalar64"))]
 use std::f32::MAX as SCALAR_MAX;
@@ -26,7 +25,7 @@ macro_rules! iter {
     };
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct NavGridConnection {
     pub from: (usize, usize),
     pub to: (usize, usize),
@@ -35,7 +34,7 @@ pub struct NavGridConnection {
 /// Nav grid identifier.
 pub type NavGridID = ID<NavGrid>;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct NavGrid {
     id: NavGridID,
     cols: usize,
@@ -292,7 +291,7 @@ impl NavGrid {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 pub struct NavFreeGridConnection {
     pub from: (isize, isize),
     pub to: (isize, isize),
@@ -301,7 +300,7 @@ pub struct NavFreeGridConnection {
 /// Nav free grid identifier.
 pub type NavFreeGridID = ID<NavFreeGrid>;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone)]
 pub struct NavFreeGrid {
     id: NavFreeGridID,
     cells: Vec<(isize, isize)>,

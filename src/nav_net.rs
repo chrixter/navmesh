@@ -1,4 +1,7 @@
-use crate::{Error, NavConnection, NavResult, NavVec3, Scalar};
+use crate::{
+    primitives::{NavVec3, SpadePoint},
+    Error, NavConnection, NavResult, Scalar,
+};
 use petgraph::{
     algo::{astar, tarjan_scc},
     graph::NodeIndex,
@@ -7,13 +10,15 @@ use petgraph::{
 };
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use spade::{rtree::RTree, BoundingRect, SpatialObject};
-use std::collections::HashMap;
+use spade::{rtree::RTree, BoundingRect, PointN, SpatialObject};
 #[cfg(not(feature = "scalar64"))]
 use std::f32::MAX as SCALAR_MAX;
 #[cfg(feature = "scalar64")]
 use std::f64::MAX as SCALAR_MAX;
+use std::{
+    collections::HashMap,
+    ops::{Div, Mul},
+};
 use typid::ID;
 
 #[cfg(feature = "parallel")]
@@ -29,16 +34,16 @@ macro_rules! iter {
     };
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NavSpatialConnection {
+#[derive(Debug, Clone)]
+pub struct NavSpatialConnection<T> {
     pub connection: NavConnection,
     pub index: usize,
-    pub a: NavVec3,
-    pub b: NavVec3,
+    pub a: T,
+    pub b: T,
 }
 
-impl NavSpatialConnection {
-    pub fn new(connection: NavConnection, index: usize, a: NavVec3, b: NavVec3) -> Self {
+impl<T> NavSpatialConnection<T> {
+    pub fn new(connection: NavConnection, index: usize, a: T, b: T) -> Self {
         Self {
             connection,
             index,
@@ -47,59 +52,72 @@ impl NavSpatialConnection {
         }
     }
 
-    pub fn closest_point(&self, point: NavVec3) -> NavVec3 {
+    pub fn closest_point(&self, point: T) -> T
+    where
+        T: NavVec3,
+    {
         let t = point.project(self.a, self.b);
         NavVec3::unproject(self.a, self.b, t)
     }
 }
 
-impl SpatialObject for NavSpatialConnection {
-    type Point = NavVec3;
+impl<T> SpatialObject for NavSpatialConnection<T>
+where
+    T: NavVec3,
+    SpadePoint<T>: PointN<Scalar = Scalar>,
+{
+    type Point = SpadePoint<T>;
 
     fn mbr(&self) -> BoundingRect<Self::Point> {
-        let min = NavVec3::new(
-            self.a.x.min(self.b.x),
-            self.a.y.min(self.b.y),
-            self.a.z.min(self.b.z),
+        let min = T::new(
+            self.a.x().min(*self.b.x()),
+            self.a.y().min(*self.b.y()),
+            self.a.z().min(*self.b.z()),
         );
-        let max = NavVec3::new(
-            self.a.x.max(self.b.x),
-            self.a.y.max(self.b.y),
-            self.a.z.max(self.b.z),
+        let max = T::new(
+            self.a.x().max(*self.b.x()),
+            self.a.y().max(*self.b.y()),
+            self.a.z().max(*self.b.z()),
         );
-        BoundingRect::from_corners(&min, &max)
+        BoundingRect::from_corners(&SpadePoint(min), &SpadePoint(max))
     }
 
     fn distance2(&self, point: &Self::Point) -> Scalar {
-        (*point - self.closest_point(*point)).sqr_magnitude()
+        (point.0 - self.closest_point(point.0)).sqr_magnitude()
     }
 }
 
 /// Nav net identifier.
-pub type NavNetID = ID<NavNet>;
+pub type NavNetID<T> = ID<NavNet<T>>;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct NavNet {
-    id: NavNetID,
-    vertices: Vec<NavVec3>,
+#[derive(Debug, Default, Clone)]
+pub struct NavNet<T>
+where
+    //T: NavVec3,
+    SpadePoint<T>: PointN<Scalar = Scalar>,
+    NavSpatialConnection<T>: SpatialObject,
+{
+    id: NavNetID<T>,
+    vertices: Vec<T>,
     connections: Vec<NavConnection>,
     distances: Vec<Scalar>,
     costs: Vec<Scalar>,
     graph: Graph<(), Scalar, Undirected>,
     nodes: Vec<NodeIndex>,
     nodes_map: HashMap<NodeIndex, usize>,
-    rtree: RTree<NavSpatialConnection>,
-    spatials: Vec<NavSpatialConnection>,
-    origin: NavVec3,
+    rtree: RTree<NavSpatialConnection<T>>,
+    spatials: Vec<NavSpatialConnection<T>>,
+    origin: T,
 }
 
-impl NavNet {
-    pub fn new(vertices: Vec<NavVec3>, connections: Vec<NavConnection>) -> NavResult<Self> {
-        let origin = vertices
-            .iter()
-            .cloned()
-            .fold(NavVec3::default(), |a, v| a + v)
-            / vertices.len() as Scalar;
+impl<T> NavNet<T>
+where
+    T: NavVec3 + Mul<T, Output = T> + Div<T, Output = T> + Div<Scalar, Output = T>,
+    SpadePoint<T>: PointN<Scalar = Scalar>,
+{
+    pub fn new(vertices: Vec<T>, connections: Vec<NavConnection>) -> NavResult<Self> {
+        let origin =
+            vertices.iter().cloned().fold(T::zero(), |a, v| a + v) / (vertices.len() as Scalar);
 
         let distances = iter!(connections)
             .enumerate()
@@ -162,7 +180,7 @@ impl NavNet {
         })
     }
 
-    pub fn scale(&self, value: NavVec3, origin: Option<NavVec3>) -> NavResult<Self> {
+    pub fn scale(&self, value: T, origin: Option<T>) -> NavResult<Self> {
         let origin = origin.unwrap_or(self.origin);
         let vertices = iter!(self.vertices)
             .map(|v| (*v - origin) * value + origin)
@@ -171,17 +189,17 @@ impl NavNet {
     }
 
     #[inline]
-    pub fn id(&self) -> NavNetID {
+    pub fn id(&self) -> NavNetID<T> {
         self.id
     }
 
     #[inline]
-    pub fn origin(&self) -> NavVec3 {
+    pub fn origin(&self) -> T {
         self.origin
     }
 
     #[inline]
-    pub fn vertices(&self) -> &[NavVec3] {
+    pub fn vertices(&self) -> &[T] {
         &self.vertices
     }
 
@@ -208,26 +226,23 @@ impl NavNet {
         Some(old)
     }
 
-    pub fn closest_point(&self, point: NavVec3) -> Option<NavVec3> {
+    pub fn closest_point(&self, point: T) -> Option<T> {
         let index = self.find_closest_connection(point)?;
         Some(self.spatials[index].closest_point(point))
     }
 
-    pub fn find_closest_connection(&self, point: NavVec3) -> Option<usize> {
-        self.rtree.nearest_neighbor(&point).map(|c| c.index)
+    pub fn find_closest_connection(&self, point: T) -> Option<usize> {
+        self.rtree
+            .nearest_neighbor(&SpadePoint(point))
+            .map(|c| c.index)
     }
 
-    pub fn find_path(&self, from: NavVec3, to: NavVec3) -> Option<Vec<NavVec3>> {
+    pub fn find_path(&self, from: T, to: T) -> Option<Vec<T>> {
         self.find_path_custom(from, to, |_, _, _| true)
     }
 
     // filter params: connection distance sqr, first vertex index, second vertex index.
-    pub fn find_path_custom<F>(
-        &self,
-        from: NavVec3,
-        to: NavVec3,
-        mut filter: F,
-    ) -> Option<Vec<NavVec3>>
+    pub fn find_path_custom<F>(&self, from: T, to: T, mut filter: F) -> Option<Vec<T>>
     where
         F: FnMut(Scalar, usize, usize) -> bool,
     {
@@ -239,7 +254,7 @@ impl NavNet {
         let end_point = self.spatials[end_index].closest_point(to);
         if start_index == end_index {
             return Some(vec![start_point, end_point]);
-        } else if start_point.same_as(end_point) {
+        } else if start_point.coincides(end_point) {
             return Some(vec![start_point]);
         }
         let start_vertice = {
@@ -312,7 +327,7 @@ impl NavNet {
         Some(points)
     }
 
-    pub fn find_islands(&self) -> Vec<Vec<NavVec3>> {
+    pub fn find_islands(&self) -> Vec<Vec<T>> {
         tarjan_scc(&self.graph)
             .into_iter()
             .map(|v| {

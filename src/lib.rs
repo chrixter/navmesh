@@ -1,16 +1,13 @@
-#[cfg(test)]
-#[macro_use]
-extern crate approx;
-
 mod nav_grid;
 mod nav_islands;
 mod nav_mesh;
 mod nav_net;
-mod nav_vec3;
+mod primitives;
 
-pub use crate::{nav_grid::*, nav_islands::*, nav_mesh::*, nav_net::*, nav_vec3::*};
+pub use crate::{
+    nav_grid::*, nav_islands::*, nav_mesh::*, nav_net::*, primitives::NVec3, primitives::NavVec3,
+};
 
-use serde::{Deserialize, Serialize};
 use std::{
     hash::{Hash, Hasher},
     result::Result as StdResult,
@@ -48,7 +45,7 @@ pub enum Error {
 /// Result data.
 pub type NavResult<T> = StdResult<T, Error>;
 
-#[derive(Debug, Default, Copy, Clone, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Copy, Clone, Eq)]
 pub struct NavConnection(pub u32, pub u32);
 
 impl Hash for NavConnection {
@@ -76,6 +73,18 @@ pub(crate) const ZERO_TRESHOLD: Scalar = 1e-6;
 mod tests {
     use super::*;
 
+    #[cfg(not(any(feature = "glam", feature = "cgmath", feature = "nalgebra")))]
+    type Vec3Type = crate::primitives::NVec3;
+
+    #[cfg(feature = "glam")]
+    type Vec3Type = glam::Vec3;
+
+    #[cfg(feature = "cgmath")]
+    type Vec3Type = cgmath::Vector3<Scalar>;
+
+    #[cfg(feature = "nalgebra")]
+    type Vec3Type = nalgebra::Vector3<Scalar>;
+
     #[test]
     fn test_send_sync() {
         fn foo<T>()
@@ -85,183 +94,62 @@ mod tests {
             println!("{:?} is Send + Sync", std::any::type_name::<T>());
         }
 
-        foo::<NavMesh>();
-        foo::<NavNet>();
+        foo::<NavMesh<Vec3Type>>();
+        foo::<NavNet<Vec3Type>>();
         foo::<NavGrid>();
         foo::<NavFreeGrid>();
         foo::<NavIslands<(), ()>>();
     }
 
     #[test]
-    fn test_raycast() {
-        assert_eq!(
-            NavVec3::raycast_plane(
-                (-1.0, -1.0, -1.0).into(),
-                (1.0, 1.0, 1.0).into(),
-                (0.0, 0.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-            )
-            .unwrap(),
-            (0.0, 0.0, 0.0).into(),
-        );
-        assert_eq!(
-            NavVec3::raycast_plane(
-                (0.0, 0.0, 0.0).into(),
-                (2.0, 1.0, 1.0).into(),
-                (1.0, 0.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-            )
-            .unwrap(),
-            (1.0, 0.5, 0.5).into(),
-        );
-        assert_eq!(
-            NavVec3::raycast_line(
-                (-1.0, -1.0, 1.0).into(),
-                (1.0, 1.0, 1.0).into(),
-                (1.0, -1.0, 0.0).into(),
-                (-1.0, 1.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-            )
-            .unwrap(),
-            (0.0, 0.0, 0.0).into(),
-        );
-        assert_eq!(
-            NavVec3::raycast_line(
-                (0.0, 0.0, 0.0).into(),
-                (2.0, 1.0, 1.0).into(),
-                (1.0, 0.0, 0.0).into(),
-                (1.0, 1.0, 0.0).into(),
-                (1.0, 0.0, 0.0).into(),
-            )
-            .unwrap(),
-            (1.0, 0.5, 0.0).into(),
-        );
-        assert_eq!(
-            NavVec3::raycast_triangle(
-                (0.0, 0.0, 1.0).into(),
-                (0.0, 0.0, -1.0).into(),
-                (0.0, -1.0, 0.0).into(),
-                (1.0, 1.0, 0.0).into(),
-                (-1.0, 1.0, 0.0).into(),
-            )
-            .unwrap(),
-            (0.0, 0.0, 0.0).into(),
-        );
-        assert_eq!(
-            NavVec3::raycast_triangle(
-                (-1.0, -1.0, 1.0).into(),
-                (-1.0, -1.0, -1.0).into(),
-                (0.0, -1.0, 0.0).into(),
-                (1.0, 1.0, 0.0).into(),
-                (-1.0, 1.0, 0.0).into(),
-            ),
-            None,
-        );
-    }
-
-    #[test]
-    fn test_line_between_points() {
-        assert_eq!(
-            true,
-            NavVec3::is_line_between_points(
-                (0.0, -1.0, 0.0).into(),
-                (0.0, 1.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-                (1.0, 0.0, 0.0).into(),
-                (0.0, 0.0, 1.0).into(),
-            ),
-        );
-        assert_eq!(
-            false,
-            NavVec3::is_line_between_points(
-                (-2.0, -1.0, 0.0).into(),
-                (-2.0, 1.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-                (1.0, 0.0, 0.0).into(),
-                (0.0, 0.0, 1.0).into(),
-            ),
-        );
-        assert_eq!(
-            false,
-            NavVec3::is_line_between_points(
-                (2.0, -1.0, 0.0).into(),
-                (2.0, 1.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-                (1.0, 0.0, 0.0).into(),
-                (0.0, 0.0, 1.0).into(),
-            ),
-        );
-        assert_eq!(
-            true,
-            NavVec3::is_line_between_points(
-                (-1.0, -1.0, 0.0).into(),
-                (-1.0, 1.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-                (1.0, 0.0, 0.0).into(),
-                (0.0, 0.0, 1.0).into(),
-            ),
-        );
-        assert_eq!(
-            true,
-            NavVec3::is_line_between_points(
-                (1.0, -1.0, 0.0).into(),
-                (1.0, 1.0, 0.0).into(),
-                (-1.0, 0.0, 0.0).into(),
-                (1.0, 0.0, 0.0).into(),
-                (0.0, 0.0, 1.0).into(),
-            ),
-        );
-    }
-
-    #[test]
     fn test_spatials() {
         {
             let vertices = vec![
-                (0.0, 0.0, 0.0).into(),
-                (2.0, 0.0, 0.0).into(),
-                (0.0, 2.0, 0.0).into(),
+                [0.0, 0.0, 0.0].into(),
+                [2.0, 0.0, 0.0].into(),
+                [0.0, 2.0, 0.0].into(),
             ];
 
-            let s = NavSpatialObject::new(0, vertices[0], vertices[1], vertices[2]);
-            assert_eq!(s.normal(), (0.0, 0.0, 1.0).into());
+            let s = NavSpatialObject::<Vec3Type>::new(0, vertices[0], vertices[1], vertices[2]);
+            assert_eq!(s.normal(), Vec3Type::new(0.0, 0.0, 1.0));
         }
         {
             let vertices = vec![
-                (0.0, 0.0, 0.0).into(),
-                (2.0, 0.0, 2.0).into(),
-                (0.0, 2.0, 0.0).into(),
+                [0.0, 0.0, 0.0].into(),
+                [2.0, 0.0, 2.0].into(),
+                [0.0, 2.0, 0.0].into(),
             ];
 
-            let s = NavSpatialObject::new(0, vertices[0], vertices[1], vertices[2]);
-            assert_eq!(s.normal(), NavVec3::new(-1.0, 0.0, 1.0).normalize());
+            let s = NavSpatialObject::<Vec3Type>::new(0, vertices[0], vertices[1], vertices[2]);
+            assert_eq!(s.normal(), Vec3Type::new(-1.0, 0.0, 1.0).normalize());
         }
         {
             let vertices = vec![
-                (1.0, 2.0, 0.0).into(),
-                (2.0, 2.0, 0.0).into(),
-                (2.0, 3.0, 0.0).into(),
-                (1.0, 3.0, 0.0).into(),
+                [1.0, 2.0, 0.0].into(),
+                [2.0, 2.0, 0.0].into(),
+                [2.0, 3.0, 0.0].into(),
+                [1.0, 3.0, 0.0].into(),
             ];
 
-            let s = NavSpatialObject::new(0, vertices[0], vertices[1], vertices[2]);
+            let s = NavSpatialObject::<Vec3Type>::new(0, vertices[0], vertices[1], vertices[2]);
             assert_eq!(s.closest_point(vertices[0]), vertices[0]);
             assert_eq!(s.closest_point(vertices[1]), vertices[1]);
             assert_eq!(s.closest_point(vertices[2]), vertices[2]);
             assert_eq!(
-                s.closest_point((1.75, 2.25, 0.0).into()),
-                (1.75, 2.25, 0.0).into()
+                s.closest_point([1.75, 2.25, 0.0].into()),
+                Vec3Type::new(1.75, 2.25, 0.0)
             );
             assert_eq!(
-                s.closest_point((1.5, 1.0, 0.0).into()),
-                (1.5, 2.0, 0.0).into()
+                s.closest_point([1.5, 1.0, 0.0].into()),
+                Vec3Type::new(1.5, 2.0, 0.0)
             );
             assert_eq!(
-                s.closest_point((3.0, 2.5, 0.0).into()),
-                (2.0, 2.5, 0.0).into()
+                s.closest_point([3.0, 2.5, 0.0].into()),
+                Vec3Type::new(2.0, 2.5, 0.0)
             );
             assert_eq!(
-                s.closest_point((1.0, 3.0, 0.0).into()),
-                (1.5, 2.5, 0.0).into()
+                s.closest_point([1.0, 3.0, 0.0].into()),
+                Vec3Type::new(1.5, 2.5, 0.0)
             );
 
             let s = NavSpatialObject::new(0, vertices[2], vertices[3], vertices[0]);
@@ -269,20 +157,20 @@ mod tests {
             assert_eq!(s.closest_point(vertices[3]), vertices[3]);
             assert_eq!(s.closest_point(vertices[0]), vertices[0]);
             assert_eq!(
-                s.closest_point((1.25, 2.75, 0.0).into()),
-                (1.25, 2.75, 0.0).into()
+                s.closest_point([1.25, 2.75, 0.0].into()),
+                Vec3Type::new(1.25, 2.75, 0.0)
             );
             assert_eq!(
-                s.closest_point((2.0, 2.0, 0.0).into()),
-                (1.5, 2.5, 0.0).into()
+                s.closest_point([2.0, 2.0, 0.0].into()),
+                Vec3Type::new(1.5, 2.5, 0.0)
             );
             assert_eq!(
-                s.closest_point((1.5, 4.0, 0.0).into()),
-                (1.5, 3.0, 0.0).into()
+                s.closest_point([1.5, 4.0, 0.0].into()),
+                Vec3Type::new(1.5, 3.0, 0.0)
             );
             assert_eq!(
-                s.closest_point((0.0, 2.5, 0.0).into()),
-                (1.0, 2.5, 0.0).into()
+                s.closest_point([0.0, 2.5, 0.0].into()),
+                Vec3Type::new(1.0, 2.5, 0.0)
             );
         }
     }
@@ -290,14 +178,14 @@ mod tests {
     #[test]
     fn test_general() {
         let vertices = vec![
-            (0.0, 0.0, 0.0).into(), // 0
-            (1.0, 0.0, 0.0).into(), // 1
-            (2.0, 0.0, 0.0).into(), // 2
-            (0.0, 1.0, 0.0).into(), // 3
-            (1.0, 1.0, 0.0).into(), // 4
-            (2.0, 1.0, 0.0).into(), // 5
-            (0.0, 2.0, 0.0).into(), // 6
-            (1.0, 2.0, 0.0).into(), // 7
+            [0.0, 0.0, 0.0].into(), // 0
+            [1.0, 0.0, 0.0].into(), // 1
+            [2.0, 0.0, 0.0].into(), // 2
+            [0.0, 1.0, 0.0].into(), // 3
+            [1.0, 1.0, 0.0].into(), // 4
+            [2.0, 1.0, 0.0].into(), // 5
+            [0.0, 2.0, 0.0].into(), // 6
+            [1.0, 2.0, 0.0].into(), // 7
         ];
         let triangles = vec![
             (0, 1, 4).into(), // 0
@@ -307,7 +195,7 @@ mod tests {
             (3, 4, 7).into(), // 4
             (7, 6, 3).into(), // 5
         ];
-        let mesh = NavMesh::new(vertices.clone(), triangles.clone()).unwrap();
+        let mesh = NavMesh::<Vec3Type>::new(vertices.clone(), triangles.clone()).unwrap();
         {
             let path = mesh.find_path_triangles(0, 0).unwrap().0;
             assert_eq!(path, vec![0]);
@@ -319,8 +207,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (0.0, 0.0, 0.0).into(),
-                    (2.0, 0.0, 0.0).into(),
+                    [0.0, 0.0, 0.0].into(),
+                    [2.0, 0.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -337,8 +225,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (0.0, 0.0, 0.0).into(),
-                    (2.0, 0.0, 0.0).into(),
+                    [0.0, 0.0, 0.0].into(),
+                    [2.0, 0.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -357,8 +245,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (2.0, 0.0, 0.0).into(),
-                    (0.0, 2.0, 0.0).into(),
+                    [2.0, 0.0, 0.0].into(),
+                    [0.0, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -375,8 +263,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (2.0, 0.0, 0.0).into(),
-                    (0.0, 2.0, 0.0).into(),
+                    [2.0, 0.0, 0.0].into(),
+                    [0.0, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -395,8 +283,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (2.0, 1.0, 0.0).into(),
-                    (1.0, 2.0, 0.0).into(),
+                    [2.0, 1.0, 0.0].into(),
+                    [1.0, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -413,8 +301,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (2.0, 1.0, 0.0).into(),
-                    (1.0, 2.0, 0.0).into(),
+                    [2.0, 1.0, 0.0].into(),
+                    [1.0, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -433,8 +321,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (0.5, 0.0, 0.0).into(),
-                    (0.5, 2.0, 0.0).into(),
+                    [0.5, 0.0, 0.0].into(),
+                    [0.5, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -451,8 +339,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (0.5, 0.0, 0.0).into(),
-                    (0.5, 2.0, 0.0).into(),
+                    [0.5, 0.0, 0.0].into(),
+                    [0.5, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -470,18 +358,18 @@ mod tests {
         }
 
         let vertices = vec![
-            (0.0, 0.0, 0.0).into(), // 0
-            (2.0, 0.0, 0.0).into(), // 1
-            (2.0, 1.0, 0.0).into(), // 2
-            (1.0, 1.0, 0.0).into(), // 3
-            (0.0, 2.0, 0.0).into(), // 4
+            [0.0, 0.0, 0.0].into(), // 0
+            [2.0, 0.0, 0.0].into(), // 1
+            [2.0, 1.0, 0.0].into(), // 2
+            [1.0, 1.0, 0.0].into(), // 3
+            [0.0, 2.0, 0.0].into(), // 4
         ];
         let triangles = vec![
             (0, 3, 4).into(), // 0
             (0, 1, 3).into(), // 1
             (1, 2, 3).into(), // 2
         ];
-        let mesh = NavMesh::new(vertices.clone(), triangles.clone()).unwrap();
+        let mesh = NavMesh::<Vec3Type>::new(vertices.clone(), triangles.clone()).unwrap();
         {
             let path = mesh.find_path_triangles(0, 2).unwrap().0;
             assert_eq!(path, vec![0, 1, 2]);
@@ -489,8 +377,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (2.0, 1.0, 0.0).into(),
-                    (0.0, 2.0, 0.0).into(),
+                    [2.0, 1.0, 0.0].into(),
+                    [0.0, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -507,8 +395,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (2.0, 1.0, 0.0).into(),
-                    (0.0, 2.0, 0.0).into(),
+                    [2.0, 1.0, 0.0].into(),
+                    [0.0, 2.0, 0.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -526,12 +414,12 @@ mod tests {
         }
 
         let vertices = vec![
-            (0.0, 0.0, 0.0).into(), // 0
-            (1.0, 0.0, 0.0).into(), // 1
-            (2.0, 0.0, 1.0).into(), // 2
-            (0.0, 1.0, 0.0).into(), // 3
-            (1.0, 1.0, 0.0).into(), // 4
-            (2.0, 1.0, 1.0).into(), // 5
+            [0.0, 0.0, 0.0].into(), // 0
+            [1.0, 0.0, 0.0].into(), // 1
+            [2.0, 0.0, 1.0].into(), // 2
+            [0.0, 1.0, 0.0].into(), // 3
+            [1.0, 1.0, 0.0].into(), // 4
+            [2.0, 1.0, 1.0].into(), // 5
         ];
         let triangles = vec![
             (0, 1, 4).into(), // 0
@@ -539,7 +427,7 @@ mod tests {
             (1, 2, 5).into(), // 2
             (5, 4, 1).into(), // 3
         ];
-        let mesh = NavMesh::new(vertices.clone(), triangles.clone()).unwrap();
+        let mesh = NavMesh::<Vec3Type>::new(vertices.clone(), triangles.clone()).unwrap();
         {
             let path = mesh.find_path_triangles(1, 2).unwrap().0;
             assert_eq!(path, vec![1, 0, 3, 2]);
@@ -547,8 +435,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (0.0, 0.5, 0.0).into(),
-                    (2.0, 0.5, 1.0).into(),
+                    [0.0, 0.5, 0.0].into(),
+                    [2.0, 0.5, 1.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -565,8 +453,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (0.0, 0.5, 0.0).into(),
-                    (2.0, 0.5, 1.0).into(),
+                    [0.0, 0.5, 0.0].into(),
+                    [2.0, 0.5, 1.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -585,8 +473,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (0.0, 1.0, 0.0).into(),
-                    (2.0, 0.0, 1.0).into(),
+                    [0.0, 1.0, 0.0].into(),
+                    [2.0, 0.0, 1.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -603,8 +491,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (0.0, 1.0, 0.0).into(),
-                    (2.0, 0.0, 1.0).into(),
+                    [0.0, 1.0, 0.0].into(),
+                    [2.0, 0.0, 1.0].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -623,8 +511,8 @@ mod tests {
         {
             let path = mesh
                 .find_path(
-                    (0.0, 1.0, 0.0).into(),
-                    (1.5, 0.25, 0.5).into(),
+                    [0.0, 1.0, 0.0].into(),
+                    [1.5, 0.25, 0.5].into(),
                     NavQuery::Accuracy,
                     NavPathMode::MidPoints,
                 )
@@ -641,8 +529,8 @@ mod tests {
             );
             let path = mesh
                 .find_path(
-                    (0.0, 1.0, 0.0).into(),
-                    (1.2, 0.4, 0.2).into(),
+                    [0.0, 1.0, 0.0].into(),
+                    [1.2, 0.4, 0.2].into(),
                     NavQuery::Accuracy,
                     NavPathMode::Accuracy,
                 )
@@ -662,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_thicken() {
-        let source = NavMesh::new(
+        let source = NavMesh::<Vec3Type>::new(
             vec![
                 [-10.0, -10.0, 0.0].into(),
                 [10.0, -10.0, 0.0].into(),
@@ -674,7 +562,7 @@ mod tests {
         .unwrap();
         let thickened = source.thicken(1.0).unwrap();
         for (a, b) in source.vertices().iter().zip(thickened.vertices().iter()) {
-            assert_relative_eq!(*b, *a + NavVec3::new(0.0, 0.0, 1.0));
+            assert_eq!(*b, *a + Vec3Type::new(0.0, 0.0, 1.0));
         }
 
         let source = NavMesh::new(
@@ -706,49 +594,17 @@ mod tests {
         .unwrap();
         let thickened = source.thicken(1.0).unwrap();
         let expected = vec![
-            NavVec3 {
-                x: -5.333333333333333,
-                y: -5.666666666666667,
-                z: -5.666666666666667,
-            },
-            NavVec3 {
-                x: 5.816496580927726,
-                y: -5.408248290463863,
-                z: -5.408248290463863,
-            },
-            NavVec3 {
-                x: 5.333333333333333,
-                y: 5.666666666666667,
-                z: -5.666666666666667,
-            },
-            NavVec3 {
-                x: -5.816496580927726,
-                y: 5.408248290463863,
-                z: -5.408248290463863,
-            },
-            NavVec3 {
-                x: -5.666666666666667,
-                y: -5.333333333333333,
-                z: 5.666666666666667,
-            },
-            NavVec3 {
-                x: 5.408248290463863,
-                y: -5.816496580927726,
-                z: 5.408248290463863,
-            },
-            NavVec3 {
-                x: 5.666666666666667,
-                y: 5.333333333333333,
-                z: 5.666666666666667,
-            },
-            NavVec3 {
-                x: -5.408248290463863,
-                y: 5.816496580927726,
-                z: 5.408248290463863,
-            },
+            Vec3Type::new(-5.333333333333333, -5.666666666666667, -5.666666666666667),
+            Vec3Type::new(5.816496580927726, -5.408248290463863, -5.408248290463863),
+            Vec3Type::new(5.333333333333333, 5.666666666666667, -5.666666666666667),
+            Vec3Type::new(-5.816496580927726, 5.408248290463863, -5.408248290463863),
+            Vec3Type::new(-5.666666666666667, -5.333333333333333, 5.666666666666667),
+            Vec3Type::new(5.408248290463863, -5.816496580927726, 5.408248290463863),
+            Vec3Type::new(5.666666666666667, 5.333333333333333, 5.666666666666667),
+            Vec3Type::new(-5.408248290463863, 5.816496580927726, 5.408248290463863),
         ];
         for (a, b) in expected.iter().zip(thickened.vertices().iter()) {
-            assert_relative_eq!(a, b);
+            assert_eq!(a, b);
         }
     }
 
